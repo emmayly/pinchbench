@@ -244,7 +244,12 @@ def _summarize_transcript(transcript: List[Dict[str, Any]]) -> str:
 
 def _build_judge_prompt(task: Task, transcript_summary: str, rubric: str) -> str:
     return (
-        "You are grading an AI agent's performance on a task.\n\n"
+        "You are a grading function. Your ONLY job is to output a single JSON object.\n\n"
+        "CRITICAL RULES:\n"
+        "- Do NOT use any tools (no Read, Write, exec, or any other tool calls)\n"
+        "- Do NOT create files or run commands\n"
+        "- Do NOT write any prose, explanation, or commentary outside the JSON\n"
+        "- Respond with ONLY a JSON object — nothing else\n\n"
         "Be a strict evaluator. Reserve 1.0 for genuinely excellent performance. "
         "An average acceptable completion should score around 0.6-0.7. "
         "Deduct points for unnecessary steps, verbose output, and inefficient tool usage.\n\n"
@@ -256,8 +261,9 @@ def _build_judge_prompt(task: Task, transcript_summary: str, rubric: str) -> str
         f"{transcript_summary}\n\n"
         "## Grading Rubric\n"
         f"{rubric}\n\n"
-        "Score each criterion from 0.0 to 1.0. Provide brief justification for each score. "
-        "Output strict JSON with keys: scores (object), total (number 0-1), notes (string)."
+        "Score each criterion from 0.0 to 1.0.\n\n"
+        "Respond with ONLY this JSON structure (no markdown, no code fences, no extra text):\n"
+        '{"scores": {"criterion_name": 0.0}, "total": 0.0, "notes": "brief justification"}'
     )
 
 
@@ -331,6 +337,24 @@ def _parse_judge_response(transcript: List[Dict[str, Any]]) -> Dict[str, Any]:
                 return parsed
         except json.JSONDecodeError:
             continue
+
+    # Fallback: try to extract numeric scores from prose responses.
+    # Models sometimes return "Total: 0.72" or "Overall score: 0.65" instead of JSON.
+    score_pattern = re.search(
+        r"(?:total|overall|final)\s*(?:score)?[:\s]*([01]\.?\d*)",
+        raw_text,
+        re.IGNORECASE,
+    )
+    if score_pattern:
+        try:
+            total = float(score_pattern.group(1))
+            if 0.0 <= total <= 1.0:
+                logger.warning(
+                    "Fell back to regex score extraction from prose (total=%.2f)", total
+                )
+                return {"scores": {}, "total": total, "notes": "Score extracted from prose (JSON parse failed)"}
+        except ValueError:
+            pass
 
     logger.warning("Failed to parse judge JSON response")
     return {}
