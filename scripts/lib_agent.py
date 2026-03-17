@@ -412,33 +412,87 @@ def execute_openclaw_task(
     exit_code = -1
     timed_out = False
 
-    try:
-        result = subprocess.run(
-            [
-                "openclaw",
-                "agent",
-                "--agent",
-                agent_id,
-                "--session-id",
-                session_id,
-                "--message",
-                task.prompt,
-            ],
-            capture_output=True,
-            text=True,
-            cwd=str(workspace),
-            timeout=timeout_seconds,
-            check=False,
-        )
-        stdout = result.stdout
-        stderr = result.stderr
-        exit_code = result.returncode
-    except subprocess.TimeoutExpired as exc:
-        timed_out = True
-        stdout = exc.stdout or ""
-        stderr = exc.stderr or ""
-    except FileNotFoundError as exc:
-        stderr = f"openclaw command not found: {exc}"
+    # Check if this is a multi-session task
+    sessions = task.frontmatter.get('sessions', [])
+    if sessions:
+        # Multi-session task: send each prompt in sequence
+        logger.info("📋 Multi-session task with %d sessions", len(sessions))
+        for i, session_entry in enumerate(sessions, 1):
+            # Extract prompt text from session entry (handle both string and dict formats)
+            if isinstance(session_entry, str):
+                session_prompt = session_entry
+            elif isinstance(session_entry, dict):
+                session_prompt = session_entry.get('prompt') or session_entry.get('message', '')
+            else:
+                logger.warning("⚠️ Skipping invalid session entry: %s", session_entry)
+                continue
+
+            logger.info("   Session %d/%d", i, len(sessions))
+            elapsed = time.time() - start_time
+            remaining = timeout_seconds - elapsed
+            if remaining <= 0:
+                timed_out = True
+                break
+            try:
+                result = subprocess.run(
+                    [
+                        "openclaw",
+                        "agent",
+                        "--agent",
+                        agent_id,
+                        "--session-id",
+                        session_id,
+                        "--message",
+                        session_prompt,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    cwd=str(workspace),
+                    timeout=remaining,
+                    check=False,
+                )
+                stdout += result.stdout
+                stderr += result.stderr
+                exit_code = result.returncode
+                if result.returncode not in (0, -1):
+                    break
+            except subprocess.TimeoutExpired as exc:
+                timed_out = True
+                stdout += exc.stdout or ""
+                stderr += exc.stderr or ""
+                break
+            except FileNotFoundError as exc:
+                stderr = f"openclaw command not found: {exc}"
+                break
+    else:
+        # Single-session task: send task.prompt once
+        try:
+            result = subprocess.run(
+                [
+                    "openclaw",
+                    "agent",
+                    "--agent",
+                    agent_id,
+                    "--session-id",
+                    session_id,
+                    "--message",
+                    task.prompt,
+                ],
+                capture_output=True,
+                text=True,
+                cwd=str(workspace),
+                timeout=timeout_seconds,
+                check=False,
+            )
+            stdout = result.stdout
+            stderr = result.stderr
+            exit_code = result.returncode
+        except subprocess.TimeoutExpired as exc:
+            timed_out = True
+            stdout = exc.stdout or ""
+            stderr = exc.stderr or ""
+        except FileNotFoundError as exc:
+            stderr = f"openclaw command not found: {exc}"
 
     transcript = _load_transcript(agent_id, session_id, start_time)
     usage = _extract_usage_from_transcript(transcript)
