@@ -1,5 +1,5 @@
 ---
-id: task_11_clawdhub
+id: task_11_clawhub
 name: Create Project Structure
 category: file_ops
 grading_type: automated
